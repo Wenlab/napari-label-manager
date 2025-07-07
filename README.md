@@ -9,8 +9,6 @@
 [![npe2](https://img.shields.io/badge/plugin-npe2-blue?link=https://napari.org/stable/plugins/index.html)](https://napari.org/stable/plugins/index.html)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border-purple.json)](https://github.com/copier-org/copier)
 
-A plugin for management of label colormap generation and opacity control
-
 ----------------------------------
 
 This [napari] plugin was generated with [copier] using the [napari-plugin-template].
@@ -22,6 +20,13 @@ https://github.com/napari/napari-plugin-template#getting-started
 and review the napari docs for plugin developers:
 https://napari.org/stable/plugins/index.html
 -->
+## Description
+This is a plugin for management of label colormap generation and opacity control.
+- Select your label layer from the dropdown
+- Generate a new colormap or use existing colors
+- Specify target label IDs (e.g., "1-5,10,15-20")
+- Adjust opacity for selected labels and background
+- Apply changes to visualize your selection
 
 ## Installation
 
