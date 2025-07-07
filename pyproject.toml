@@ -49,7 +49,11 @@ testing = [
 [project.entry-points."napari.manifest"]
 napari-laber-manager = "napari_laber_manager:napari.yaml"
 
-
+[project.urls]
+"Bug Tracker" = "https://github.com/Wenlab/napari-label-manager/issues"
+"Documentation" = "https://github.com/Wenlab/napari-label-manager#README.md"
+"Source Code" = "https://github.com/Wenlab/napari-label-manager"
+"User Support" = "https://github.com/Wenlab/napari-label-manager/issues"
 
 [build-system]
 requires = ["setuptools>=42.0.0", "wheel", "setuptools_scm"]
