@@ -7,7 +7,7 @@ categories: ["Utilities"]
 contributions:
   commands:
     - id: napari-laber-manager.LabelManager
-      python_name: napari_laber_manager.widgets:LabelManager
+      python_name: napari_laber_manager._widgets:LabelManager
       title: Laber Manager
   widgets:
     - command: napari-laber-manager.LabelManager
