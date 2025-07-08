@@ -1,14 +1,37 @@
 """
 Napari Label Manager Plugin
 A plugin for batch management of label colors and opacity in napari.
+
+Performance Optimizations for Large Label Layers:
+
+Memory-Efficient Strategies:
+1. **Time-Series Optimization**: For 4D+ arrays, only process current time slice
+2. **Block Sampling**: Use systematic sampling instead of random indices to avoid memory allocation
+3. **Tiered Sampling**:
+   - Normal arrays: Exact computation
+   - Large arrays (>10M pixels): Block sampling with 500k sample size
+   - Extremely large arrays: Minimal sampling with 50k sample size
+4. **Caching System**: Results cached per layer ID to avoid recomputation
+5. **Delayed Updates**: Layer info updates delayed to prevent UI blocking
+6. **Background Computation**: Heavy computations run in separate threads
+7. **Graceful Degradation**: Multiple fallback strategies for memory errors
+
+Memory Usage Improvements:
+- Avoids creating large index arrays (which caused the 140GB allocation error)
+- Processes only current time slice for time-series data
+- Uses step-based sampling instead of random.choice()
+- Automatic fallback to smaller samples when memory is insufficient
+
+These optimizations handle datasets with billions of pixels while maintaining responsiveness.
 """
 
 import re
+import threading
 
 import napari
 import numpy as np
 from napari.utils import colormaps as cmap
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtGui import QFont
 from qtpy.QtWidgets import (
     QCheckBox,
@@ -40,6 +63,12 @@ class LabelManager(QWidget):
         self.full_color_dict = {}
         self.background_value = 0
         self.max_labels = 100
+
+        # Performance optimization: cache for layer stats
+        self._layer_stats_cache = {}
+        self._update_timer = QTimer()
+        self._update_timer.setSingleShot(True)
+        self._update_timer.timeout.connect(self._delayed_update_layer_info)
 
         self.setup_ui()
         self.connect_signals()
@@ -202,8 +231,32 @@ class LabelManager(QWidget):
     def connect_signals(self):
         """Connect viewer signals."""
         self.viewer.layers.events.inserted.connect(self.update_layer_combo)
+        self.viewer.layers.events.removed.connect(self.on_layer_removed)
         self.viewer.layers.events.removed.connect(self.update_layer_combo)
+
+        # Connect to layer events for cache invalidation
+        self.viewer.layers.events.changed.connect(
+            self.on_layer_properties_changed
+        )
+
         self.update_layer_combo()
+
+    def on_layer_removed(self, event):
+        """Handle layer removal to clean up cache."""
+        # Clean up cache for removed layers
+        removed_layer = event.value
+        layer_id = id(removed_layer)
+        if layer_id in self._layer_stats_cache:
+            del self._layer_stats_cache[layer_id]
+
+    def on_layer_properties_changed(self, event):
+        """Handle layer property changes that might affect cache validity."""
+        # Clear cache when layer properties change (e.g., time step)
+        if hasattr(event, "source") and hasattr(event.source, "current_step"):
+            layer_id = id(event.source)
+            if layer_id in self._layer_stats_cache:
+                # Only clear if this is a time-series change
+                del self._layer_stats_cache[layer_id]
 
     def update_layer_combo(self):
         """Update layer combo box with available label layers."""
@@ -226,8 +279,13 @@ class LabelManager(QWidget):
                 if hasattr(self.current_layer, "colormap"):
                     self.extract_current_colormap()
 
-                # Update layer info
-                self.update_layer_info()
+                # Clear cache for this layer
+                layer_id = id(self.current_layer)
+                if layer_id in self._layer_stats_cache:
+                    del self._layer_stats_cache[layer_id]
+
+                # Delay layer info update to avoid blocking UI
+                self._update_timer.start(100)  # 100ms delay
 
             except KeyError:
                 self.update_status(f"Layer '{layer_name}' not found", "red")
@@ -435,49 +493,299 @@ class LabelManager(QWidget):
         if not self.current_layer or not hasattr(self.current_layer, "data"):
             return 0
 
-        # Get unique labels excluding background (0)
-        unique_labels = np.unique(self.current_layer.data)
+        # Use cache to avoid expensive computation
+        layer_id = id(self.current_layer)
+        if layer_id in self._layer_stats_cache:
+            return self._layer_stats_cache[layer_id]["count"]
+
+        # For large arrays, use sampling for estimation
+        data = self.current_layer.data
+        if data.size > 10_000_000:  # 10M pixels
+            return self._estimate_label_count_sampling(data, layer_id)
+
+        # For smaller arrays, compute exactly
+        unique_labels = np.unique(data)
         non_zero_labels = unique_labels[unique_labels != 0]
-        return len(non_zero_labels)
+        count = len(non_zero_labels)
+
+        # Cache the result
+        self._layer_stats_cache[layer_id] = {
+            "count": count,
+            "ids": non_zero_labels.tolist(),
+        }
+        return count
 
     def get_current_label_ids(self) -> list:
         """Get list of unique non-zero label IDs in the current layer."""
         if not self.current_layer or not hasattr(self.current_layer, "data"):
             return []
 
-        # Get unique labels excluding background (0)
-        unique_labels = np.unique(self.current_layer.data)
+        # Use cache to avoid expensive computation
+        layer_id = id(self.current_layer)
+        if layer_id in self._layer_stats_cache:
+            return self._layer_stats_cache[layer_id]["ids"]
+
+        # For large arrays, use sampling for estimation
+        data = self.current_layer.data
+        if data.size > 10_000_000:  # 10M pixels
+            return self._estimate_label_ids_sampling(data, layer_id)
+
+        # For smaller arrays, compute exactly
+        unique_labels = np.unique(data)
         non_zero_labels = unique_labels[unique_labels != 0]
-        return sorted(non_zero_labels.tolist())
+        ids = sorted(non_zero_labels.tolist())
+
+        # Cache the result
+        self._layer_stats_cache[layer_id] = {"count": len(ids), "ids": ids}
+        return ids
 
     def update_layer_info(self):
-        """Update layer information display."""
+        """Update layer information display (now optimized for large datasets)."""
+        # This method is now handled by _delayed_update_layer_info
+        # to prevent blocking the UI thread
+        self._delayed_update_layer_info()
+
+    def set_all_current_ids(self):
+        """Set all current label IDs in the input field."""
+        if label_ids := self.get_current_label_ids():
+            ids_string = ",".join(map(str, label_ids))
+            self.label_ids_input.setText(ids_string)
+
+            layer_id = id(self.current_layer)
+            cache_info = self._layer_stats_cache.get(layer_id, {})
+            is_estimate = cache_info.get("is_estimate", False)
+            is_minimal = cache_info.get("minimal_sample", False)
+
+            if is_estimate:
+                if is_minimal:
+                    self.update_status(
+                        f"Set ~{len(label_ids)} label IDs (minimal sample - very large dataset)",
+                        "orange",
+                    )
+                else:
+                    original_shape = cache_info.get("data_shape", "unknown")
+                    self.update_status(
+                        f"Set ~{len(label_ids)} estimated label IDs (shape: {original_shape})",
+                        "orange",
+                    )
+            else:
+                self.update_status(
+                    f"Set {len(label_ids)} current label IDs", "green"
+                )
+        else:
+            self.update_status("No labels found in current layer", "orange")
+
+    def _get_current_time_slice(self, data: np.ndarray) -> np.ndarray:
+        """Get the current time slice if this is a time-series dataset."""
+        if hasattr(self.current_layer, "current_step") and data.ndim >= 3:
+            # This is likely a time-series dataset
+            current_step = getattr(
+                self.current_layer, "current_step", [0] * (data.ndim - 2)
+            )
+            if (
+                isinstance(current_step, (list, tuple))
+                and len(current_step) > 0
+            ):
+                # Get the first dimension's current step (usually time)
+                time_idx = (
+                    current_step[0] if current_step[0] < data.shape[0] else 0
+                )
+                return data[time_idx]
+        return data
+
+    def _estimate_label_count_sampling(
+        self, data: np.ndarray, layer_id: int
+    ) -> int:
+        """Estimate label count using memory-efficient sampling for large arrays."""
+        # For time-series data, only process current time slice
+        data = self._get_current_time_slice(data)
+
+        # Use smaller sample size for extremely large arrays
+        max_sample_size = 500_000  # Reduced from 1M
+        sample_size = min(
+            max_sample_size, max(10_000, data.size // 100)
+        )  # At least 10k, at most 1% of data
+
+        try:
+            # Use memory-efficient block sampling instead of random indices
+            sample = self._block_sample_array(data, sample_size)
+
+            # Get unique labels in sample
+            unique_sample = np.unique(sample)
+            non_zero_sample = unique_sample[unique_sample != 0]
+            estimated_count = len(non_zero_sample)
+
+            # Cache the estimated result (mark as estimate)
+            self._layer_stats_cache[layer_id] = {
+                "count": estimated_count,
+                "ids": non_zero_sample.tolist(),
+                "is_estimate": True,
+                "data_shape": self.current_layer.data.shape,  # Store original shape
+            }
+            return estimated_count
+
+        except MemoryError:
+            # Fallback to even smaller sample
+            return self._minimal_sample_estimation(data, layer_id)
+
+    def _estimate_label_ids_sampling(
+        self, data: np.ndarray, layer_id: int
+    ) -> list:
+        """Estimate label IDs using memory-efficient sampling for large arrays."""
+        # For time-series data, only process current time slice
+        data = self._get_current_time_slice(data)
+
+        # Use smaller sample size for extremely large arrays
+        max_sample_size = 500_000  # Reduced from 1M
+        sample_size = min(
+            max_sample_size, max(10_000, data.size // 100)
+        )  # At least 10k, at most 1% of data
+
+        try:
+            # Use memory-efficient block sampling instead of random indices
+            sample = self._block_sample_array(data, sample_size)
+
+            # Get unique labels in sample
+            unique_sample = np.unique(sample)
+            non_zero_sample = unique_sample[unique_sample != 0]
+            ids = sorted(non_zero_sample.tolist())
+
+            # Cache the estimated result (mark as estimate)
+            self._layer_stats_cache[layer_id] = {
+                "count": len(ids),
+                "ids": ids,
+                "is_estimate": True,
+                "data_shape": self.current_layer.data.shape,  # Store original shape
+            }
+            return ids
+
+        except MemoryError:
+            # Fallback to even smaller sample
+            return self._minimal_sample_estimation(
+                data, layer_id, return_ids=True
+            )
+
+    def _block_sample_array(
+        self, data: np.ndarray, sample_size: int
+    ) -> np.ndarray:
+        """Memory-efficient block sampling without creating large index arrays."""
+        # Calculate step size for uniform sampling
+        total_size = data.size
+        step = max(1, total_size // sample_size)
+
+        # Use numpy's advanced indexing with calculated steps
+        if data.ndim == 1:
+            return data[::step][:sample_size]
+        elif data.ndim == 2:
+            h, w = data.shape
+            h_step = max(1, h // int(np.sqrt(sample_size)))
+            w_step = max(1, w // int(np.sqrt(sample_size)))
+            return data[::h_step, ::w_step].ravel()[:sample_size]
+        else:
+            # For higher dimensions, flatten and sample with step
+            flat_data = data.ravel()
+            return flat_data[::step][:sample_size]
+
+    def _minimal_sample_estimation(
+        self, data: np.ndarray, layer_id: int, return_ids: bool = False
+    ):
+        """Fallback method for extremely large arrays that cause memory errors."""
+        try:
+            # Use a very small sample size
+            sample_size = min(
+                50_000, data.size // 1000
+            )  # 0.1% of data or 50k max
+            sample = self._block_sample_array(data, sample_size)
+
+            unique_sample = np.unique(sample)
+            non_zero_sample = unique_sample[unique_sample != 0]
+
+            if return_ids:
+                ids = sorted(non_zero_sample.tolist())
+                self._layer_stats_cache[layer_id] = {
+                    "count": len(ids),
+                    "ids": ids,
+                    "is_estimate": True,
+                    "minimal_sample": True,
+                    "data_shape": self.current_layer.data.shape,
+                }
+                return ids
+            else:
+                count = len(non_zero_sample)
+                self._layer_stats_cache[layer_id] = {
+                    "count": count,
+                    "ids": non_zero_sample.tolist(),
+                    "is_estimate": True,
+                    "minimal_sample": True,
+                    "data_shape": self.current_layer.data.shape,
+                }
+                return count
+
+        except (MemoryError, ValueError, RuntimeError) as e:
+            # Ultimate fallback - return minimal info
+            self._layer_stats_cache[layer_id] = {
+                "count": 0,
+                "ids": [],
+                "is_estimate": True,
+                "error": str(e),
+                "data_shape": self.current_layer.data.shape,
+            }
+            return [] if return_ids else 0
+
+    def _delayed_update_layer_info(self):
+        """Update layer information in a delayed manner to avoid blocking UI."""
         if not self.current_layer:
             self.info_text.setText("No layer selected")
             return
 
-        label_count = self.get_current_label_count()
-        label_ids = self.get_current_label_ids()
+        # Start background computation
+        self._compute_layer_info_async()
 
-        info_text = f"Current layer: {self.current_layer.name}\n"
-        info_text += f"Total labels: {label_count}\n"
+    def _compute_layer_info_async(self):
+        """Compute layer information asynchronously."""
 
-        if label_ids:
-            if len(label_ids) <= 30:
-                info_text += f"Label IDs: {label_ids}\n"
-            else:
-                info_text += f"Label IDs: {label_ids[:30]}... (and {len(label_ids) - 30} more)\n"
+        def compute_in_background():
+            try:
+                label_count = self.get_current_label_count()
+                layer_id = id(self.current_layer)
+                cache_info = self._layer_stats_cache.get(layer_id, {})
+                is_estimate = cache_info.get("is_estimate", False)
+                is_minimal = cache_info.get("minimal_sample", False)
+                data_shape = cache_info.get("data_shape", "unknown")
 
-        self.info_text.setText(info_text)
+                # Prepare info text
+                info_text = f"Current layer: {self.current_layer.name}\n"
+                info_text += f"Data shape: {data_shape}\n"
 
-    def set_all_current_ids(self):
-        """Set all current label IDs in the input field."""
-        label_ids = self.get_current_label_ids()
-        if label_ids:
-            ids_string = ",".join(map(str, label_ids))
-            self.label_ids_input.setText(ids_string)
-            self.update_status(
-                f"Set {len(label_ids)} current label IDs", "green"
-            )
-        else:
-            self.update_status("No labels found in current layer", "orange")
+                if is_estimate:
+                    if is_minimal:
+                        info_text += f"Estimated labels: ~{label_count} (minimal sample - extremely large dataset)\n"
+                    else:
+                        info_text += f"Estimated labels: ~{label_count} (sampled from current time slice)\n"
+                else:
+                    info_text += f"Total labels: {label_count}\n"
+
+                # Add performance tip for time-series data
+                if (
+                    isinstance(data_shape, (tuple, list))
+                    and len(data_shape) >= 4
+                ):
+                    info_text += "Tip: Processing current time slice only for performance\n"
+
+                # Update UI in main thread
+                QTimer.singleShot(0, lambda: self.info_text.setText(info_text))
+
+            except (
+                MemoryError,
+                ValueError,
+                RuntimeError,
+                AttributeError,
+            ) as e:
+                error_msg = f"Error computing layer info: {str(e)}"
+                QTimer.singleShot(
+                    0, lambda: self.update_status(error_msg, "red")
+                )
+
+        # Run computation in background thread
+        thread = threading.Thread(target=compute_in_background, daemon=True)
+        thread.start()
