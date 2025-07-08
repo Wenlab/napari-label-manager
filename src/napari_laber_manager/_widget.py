@@ -6,6 +6,7 @@ A plugin for batch management of label colors and opacity in napari.
 import re
 
 import napari
+import numpy as np
 from napari.utils import colormaps as cmap
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QFont
@@ -124,6 +125,10 @@ class LabelManager(QWidget):
         self.preset_odd_btn.clicked.connect(lambda: self.set_preset_ids("odd"))
         presets_layout.addWidget(self.preset_odd_btn)
 
+        self.preset_all_btn = QPushButton("All Current")
+        self.preset_all_btn.clicked.connect(self.set_all_current_ids)
+        presets_layout.addWidget(self.preset_all_btn)
+
         batch_layout.addLayout(presets_layout)
 
         # Opacity controls
@@ -220,6 +225,9 @@ class LabelManager(QWidget):
                 # Initialize colormap if needed
                 if hasattr(self.current_layer, "colormap"):
                     self.extract_current_colormap()
+
+                # Update layer info
+                self.update_layer_info()
 
             except KeyError:
                 self.update_status(f"Layer '{layer_name}' not found", "red")
@@ -421,3 +429,55 @@ class LabelManager(QWidget):
         direct_colormap.background_value = background_value
         direct_colormap.name = name
         return direct_colormap
+
+    def get_current_label_count(self) -> int:
+        """Get the count of unique non-zero labels in the current layer."""
+        if not self.current_layer or not hasattr(self.current_layer, "data"):
+            return 0
+
+        # Get unique labels excluding background (0)
+        unique_labels = np.unique(self.current_layer.data)
+        non_zero_labels = unique_labels[unique_labels != 0]
+        return len(non_zero_labels)
+
+    def get_current_label_ids(self) -> list:
+        """Get list of unique non-zero label IDs in the current layer."""
+        if not self.current_layer or not hasattr(self.current_layer, "data"):
+            return []
+
+        # Get unique labels excluding background (0)
+        unique_labels = np.unique(self.current_layer.data)
+        non_zero_labels = unique_labels[unique_labels != 0]
+        return sorted(non_zero_labels.tolist())
+
+    def update_layer_info(self):
+        """Update layer information display."""
+        if not self.current_layer:
+            self.info_text.setText("No layer selected")
+            return
+
+        label_count = self.get_current_label_count()
+        label_ids = self.get_current_label_ids()
+
+        info_text = f"Current layer: {self.current_layer.name}\n"
+        info_text += f"Total labels: {label_count}\n"
+
+        if label_ids:
+            if len(label_ids) <= 30:
+                info_text += f"Label IDs: {label_ids}\n"
+            else:
+                info_text += f"Label IDs: {label_ids[:30]}... (and {len(label_ids) - 30} more)\n"
+
+        self.info_text.setText(info_text)
+
+    def set_all_current_ids(self):
+        """Set all current label IDs in the input field."""
+        label_ids = self.get_current_label_ids()
+        if label_ids:
+            ids_string = ",".join(map(str, label_ids))
+            self.label_ids_input.setText(ids_string)
+            self.update_status(
+                f"Set {len(label_ids)} current label IDs", "green"
+            )
+        else:
+            self.update_status("No labels found in current layer", "orange")
