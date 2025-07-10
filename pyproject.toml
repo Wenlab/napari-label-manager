@@ -1,5 +1,5 @@
 [project]
-name = "napari-laber-manager"
+name = "napari-label-manager"
 dynamic = ["version"]
 description = "A plugin for management of label colormap generation and opacity control"
 readme = "README.md"
@@ -37,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Allow easily installation with the full, default napari installation
-# (including Qt backend) using napari-laber-manager[all].
+# (including Qt backend) using napari-label-manager[all].
 all = ["napari[all]"]
 testing = [
     "tox",
@@ -48,7 +48,7 @@ testing = [
 ]
 
 [project.entry-points."napari.manifest"]
-napari-laber-manager = "napari_laber_manager:napari.yaml"
+napari-label-manager = "napari_label_manager:napari.yaml"
 
 [project.urls]
 "Bug Tracker" = "https://github.com/Wenlab/napari-label-manager/issues"
@@ -70,7 +70,7 @@ where = ["src"]
 "*" = ["*.yaml"]
 
 [tool.setuptools_scm]
-write_to = "src/napari_laber_manager/_version.py"
+write_to = "src/napari_label_manager/_version.py"
 fallback_version = "0.0.1+nogit"
 
 [tool.black]

@@ -1,14 +1,14 @@
-name: napari-laber-manager
-display_name: Laber Manager
+name: napari-label-manager
+display_name: Label Manager
 # use 'hidden' to remove plugin from napari hub search results
 visibility: public
 # see https://napari.org/stable/plugins/technical_references/manifest.html#fields for valid categories
 categories: ["Utilities"]
 contributions:
   commands:
-    - id: napari-laber-manager.LabelManager
-      python_name: napari_laber_manager._widget:LabelManager
-      title: Laber Manager
+    - id: napari-label-manager.LabelManager
+      python_name: napari_label_manager._widget:LabelManager
+      title: Label Manager
   widgets:
-    - command: napari-laber-manager.LabelManager
+    - command: napari-label-manager.LabelManager
       display_name: LabelManager

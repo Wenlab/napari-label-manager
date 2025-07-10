@@ -1,9 +1,9 @@
-# napari-laber-manager
+# napari-label-manager
 
-[![License BSD-3](https://img.shields.io/pypi/l/napari-laber-manager.svg?color=green)](https://github.com/Wenlab/napari-laber-manager/raw/main/LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/napari-laber-manager.svg?color=green)](https://pypi.org/project/napari-laber-manager)
-[![Python Version](https://img.shields.io/pypi/pyversions/napari-laber-manager.svg?color=green)](https://python.org)
-[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-laber-manager)](https://napari-hub.org/plugins/napari-laber-manager)
+[![License BSD-3](https://img.shields.io/pypi/l/napari-label-manager.svg?color=green)](https://github.com/Wenlab/napari-label-manager/raw/main/LICENSE)
+[![PyPI](https://img.shields.io/pypi/v/napari-label-manager.svg?color=green)](https://pypi.org/project/napari-label-manager)
+[![Python Version](https://img.shields.io/pypi/pyversions/napari-label-manager.svg?color=green)](https://python.org)
+[![napari hub](https://img.shields.io/endpoint?url=https://api.napari-hub.org/shields/napari-label-manager)](https://napari-hub.org/plugins/napari-label-manager)
 [![npe2](https://img.shields.io/badge/plugin-npe2-blue?link=https://napari.org/stable/plugins/index.html)](https://napari.org/stable/plugins/index.html)
 [![Copier](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/copier-org/copier/master/img/badge/badge-grayscale-inverted-border-purple.json)](https://github.com/copier-org/copier)
 
@@ -28,16 +28,16 @@ This is a plugin for management of label colormap generation and opacity control
 
 ## Installation
 
-You can install `napari-laber-manager` via [pip]:
+You can install `napari-label-manager` via [pip]:
 
 ```
-pip install napari-laber-manager
+pip install napari-label-manager
 ```
 
-If napari is not already installed, you can install `napari-laber-manager` with napari and Qt via:
+If napari is not already installed, you can install `napari-label-manager` with napari and Qt via:
 
 ```
-pip install "napari-laber-manager[all]"
+pip install "napari-label-manager[all]"
 ```
 
 
@@ -50,7 +50,7 @@ the coverage at least stays the same before you submit a pull request.
 ## License
 
 Distributed under the terms of the [BSD-3] license,
-"napari-laber-manager" is free and open source software
+"napari-label-manager" is free and open source software
 
 ## Issues
 

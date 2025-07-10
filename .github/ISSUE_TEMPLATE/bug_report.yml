@@ -1,5 +1,5 @@
 name: "\U0001F41B Bug Report"
-description: Report a bug encountered while using napari-laber-manager
+description: Report a bug encountered while using napari-label-manager
 labels:
   - "bug"
 

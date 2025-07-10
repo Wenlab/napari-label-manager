@@ -8,7 +8,7 @@ from qtpy.QtWidgets import (
     QSpinBox,
 )
 
-from napari_laber_manager._widget import (
+from napari_label_manager._widget import (
     LabelManager,
 )
 
