@@ -53,17 +53,20 @@ def test_layer_selection_update(make_napari_viewer):
     viewer = make_napari_viewer()
     widget = LabelManager(viewer)
 
-    # Initially no label layers
-    assert widget.layer_combo.count() == 0
+    # Initially no label layers, should show placeholder
+    assert widget.layer_combo.count() == 1, "Expected 1 item (placeholder)"
+    assert widget.layer_combo.itemText(0) == "No Labels layers available"
+    assert not widget.layer_combo.isEnabled(), "Combo box should be disabled"
 
     # Add a label layer
     np.random.seed(42)
     labels = np.random.randint(0, 20, size=(100, 100))
     viewer.add_labels(labels, name="test_labels")
 
-    # Layer combo should update
-    assert widget.layer_combo.count() == 1
+    # Layer combo should update, removing placeholder and adding the new layer
+    assert widget.layer_combo.count() == 1, "Expected 1 layer"
     assert widget.layer_combo.itemText(0) == "test_labels"
+    assert widget.layer_combo.isEnabled(), "Combo box should be enabled"
 
     # Add another label layer
     labels2 = np.random.randint(0, 15, size=(50, 50))
