@@ -30,6 +30,7 @@ import threading
 
 import napari
 import numpy as np
+from napari.layers import Labels
 from napari.utils import colormaps as cmap
 from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtGui import QFont
@@ -48,6 +49,76 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+class LabelLayerSelector:
+    """A specialized layer selector that only shows Labels layers."""
+
+    def __init__(self, combo_widget, viewer, callback_function=None):
+        """
+        Initialize the label layer selector.
+
+        Parameters
+        ----------
+        combo_widget : QComboBox
+            The combo box widget to populate with labels layers
+        viewer : napari.Viewer
+            The napari viewer instance
+        callback_function : callable, optional
+            Function to call when layer selection changes
+        """
+        self.combo = combo_widget
+        self.viewer = viewer
+        self.callback = callback_function
+
+        # Connect to viewer events
+        self.viewer.layers.events.inserted.connect(self.update_layers)
+        self.viewer.layers.events.removed.connect(self.update_layers)
+        self.viewer.layers.events.reordered.connect(self.update_layers)
+
+        # Initial population (before connecting the callback to avoid premature calls)
+        self.update_layers()
+
+        # Connect combo box change event after initial population
+        if self.callback:
+            self.combo.currentTextChanged.connect(self.callback)
+
+    def update_layers(self):
+        """Update the combo box with only Labels layers."""
+        current_selection = self.combo.currentText()
+        self.combo.clear()
+
+        # Get all Labels layers
+        label_layers = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, Labels)
+        ]
+
+        if label_layers:
+            self.combo.addItems(label_layers)
+            # Try to maintain previous selection if it still exists
+            if current_selection in label_layers:
+                self.combo.setCurrentText(current_selection)
+        else:
+            # Add a placeholder when no labels layers are available
+            self.combo.addItem("No Labels layers available")
+            self.combo.setEnabled(False)
+            return
+
+        self.combo.setEnabled(True)
+
+    def get_current_layer(self):
+        """Get the currently selected Labels layer."""
+        layer_name = self.combo.currentText()
+        if layer_name and layer_name != "No Labels layers available":
+            try:
+                layer = self.viewer.layers[layer_name]
+                if isinstance(layer, Labels):
+                    return layer
+            except KeyError:
+                pass
+        return None
 
 
 class LabelManager(QWidget):
@@ -70,8 +141,16 @@ class LabelManager(QWidget):
         self._update_timer.setSingleShot(True)
         self._update_timer.timeout.connect(self._delayed_update_layer_info)
 
+        # Initialize layer_selector as None first
+        self.layer_selector = None
+
         self.setup_ui()
         self.connect_signals()
+
+        # Initialize the label layer selector
+        self.layer_selector = LabelLayerSelector(
+            self.layer_combo, self.viewer, self.on_layer_changed
+        )
 
     def setup_ui(self):
         """Setup the user interface."""
@@ -90,9 +169,13 @@ class LabelManager(QWidget):
         layer_layout = QVBoxLayout()
 
         self.layer_combo = QComboBox()
-        self.layer_combo.currentTextChanged.connect(self.on_layer_changed)
         layer_layout.addWidget(QLabel("Select Label Layer:"))
         layer_layout.addWidget(self.layer_combo)
+
+        # Initialize the specialized layer selector
+        self.layer_selector = LabelLayerSelector(
+            self.layer_combo, self.viewer, self.on_layer_changed
+        )
 
         layer_group.setLayout(layer_layout)
         layout.addWidget(layer_group)
@@ -230,16 +313,13 @@ class LabelManager(QWidget):
 
     def connect_signals(self):
         """Connect viewer signals."""
-        self.viewer.layers.events.inserted.connect(self.update_layer_combo)
+        # Layer selection is now handled by LabelLayerSelector
         self.viewer.layers.events.removed.connect(self.on_layer_removed)
-        self.viewer.layers.events.removed.connect(self.update_layer_combo)
 
         # Connect to layer events for cache invalidation
         self.viewer.layers.events.changed.connect(
             self.on_layer_properties_changed
         )
-
-        self.update_layer_combo()
 
     def on_layer_removed(self, event):
         """Handle layer removal to clean up cache."""
@@ -258,21 +338,24 @@ class LabelManager(QWidget):
                 # Only clear if this is a time-series change
                 del self._layer_stats_cache[layer_id]
 
-    def update_layer_combo(self):
-        """Update layer combo box with available label layers."""
-        self.layer_combo.clear()
-        label_layers = [
-            layer.name
-            for layer in self.viewer.layers
-            if hasattr(layer, "colormap")
-        ]
-        self.layer_combo.addItems(label_layers)
-
     def on_layer_changed(self, layer_name: str):
         """Handle layer selection change."""
-        if layer_name:
-            try:
-                self.current_layer = self.viewer.layers[layer_name]
+        if layer_name and layer_name != "No Labels layers available":
+            # Use the layer selector to get the current layer if available
+            if self.layer_selector is not None:
+                self.current_layer = self.layer_selector.get_current_layer()
+            else:
+                # Fallback for initialization period
+                try:
+                    layer = self.viewer.layers[layer_name]
+                    if isinstance(layer, Labels):
+                        self.current_layer = layer
+                    else:
+                        self.current_layer = None
+                except KeyError:
+                    self.current_layer = None
+
+            if self.current_layer is not None:
                 self.update_status(f"Selected layer: {layer_name}", "blue")
 
                 # Initialize colormap if needed
@@ -286,9 +369,11 @@ class LabelManager(QWidget):
 
                 # Delay layer info update to avoid blocking UI
                 self._update_timer.start(100)  # 100ms delay
-
-            except KeyError:
-                self.update_status(f"Layer '{layer_name}' not found", "red")
+            else:
+                self.update_status("Invalid layer selection", "red")
+        else:
+            self.current_layer = None
+            self.update_status("No Labels layer selected", "orange")
 
     def extract_current_colormap(self):
         """Extract current colormap from the selected layer."""
