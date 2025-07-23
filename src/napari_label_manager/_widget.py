@@ -584,10 +584,40 @@ class LabelManager(QWidget):
             return self._layer_stats_cache[layer_id]["count"]
 
         # For large arrays, use sampling for estimation
-        data = self.current_layer.data
+        data = self._get_current_time_slice(self.current_layer.data)
+        # For large arrays, use sparse-aware sampling for estimation
         if data.size > 10_000_000:  # 10M pixels
-            return self._estimate_label_count_sampling(data, layer_id)
+            try:
+                # Step 1: Quick sparse check - find non-zero positions efficiently
+                non_zero_mask = data != 0
+                non_zero_count = np.count_nonzero(non_zero_mask)
 
+                # If very few non-zero elements, process them all (exact result)
+                if (
+                    non_zero_count < 100_000
+                ):  # Less than 100k non-zero elements
+                    non_zero_values = data[non_zero_mask]
+                    unique_labels = np.unique(non_zero_values)
+                    count = len(unique_labels)
+
+                    # Cache exact result for sparse arrays
+                    self._layer_stats_cache[layer_id] = {
+                        "count": count,
+                        "ids": unique_labels.tolist(),
+                        "is_estimate": False,  # This is exact for sparse arrays
+                        "sparsity": non_zero_count / data.size,
+                        "non_zero_count": non_zero_count,
+                        "data_shape": self.current_layer.data.shape,
+                    }
+                    return count
+                # For denser arrays, sample from non-zero positions only
+                return self._sample_from_non_zero_positions(
+                    data, non_zero_mask, layer_id
+                )
+
+            except MemoryError:
+                # Fallback to original block sampling if memory is insufficient
+                return self._estimate_label_count_sampling(data, layer_id)
         # For smaller arrays, compute exactly
         unique_labels = np.unique(data)
         non_zero_labels = unique_labels[unique_labels != 0]
@@ -610,10 +640,43 @@ class LabelManager(QWidget):
         if layer_id in self._layer_stats_cache:
             return self._layer_stats_cache[layer_id]["ids"]
 
-        # For large arrays, use sampling for estimation
-        data = self.current_layer.data
+        # For time-series data, only process current time slice
+        data = self._get_current_time_slice(self.current_layer.data)
+
+        # For large arrays, use sparse-aware sampling for estimation
         if data.size > 10_000_000:  # 10M pixels
-            return self._estimate_label_ids_sampling(data, layer_id)
+            try:
+                # Step 1: Quick sparse check - find non-zero positions efficiently
+                non_zero_mask = data != 0
+                non_zero_count = np.count_nonzero(non_zero_mask)
+
+                # If very few non-zero elements, process them all (exact result)
+                if (
+                    non_zero_count < 100_000
+                ):  # Less than 100k non-zero elements
+                    non_zero_values = data[non_zero_mask]
+                    unique_labels = np.unique(non_zero_values)
+                    ids = sorted(unique_labels.tolist())
+
+                    # Cache exact result for sparse arrays
+                    self._layer_stats_cache[layer_id] = {
+                        "count": len(ids),
+                        "ids": ids,
+                        "is_estimate": False,  # This is exact for sparse arrays
+                        "sparsity": non_zero_count / data.size,
+                        "non_zero_count": non_zero_count,
+                        "data_shape": self.current_layer.data.shape,
+                    }
+                    return ids
+
+                # For denser arrays, sample from non-zero positions only
+                return self._sample_from_non_zero_positions(
+                    data, non_zero_mask, layer_id, return_ids=True
+                )
+
+            except MemoryError:
+                # Fallback to original block sampling if memory is insufficient
+                return self._estimate_label_ids_sampling(data, layer_id)
 
         # For smaller arrays, compute exactly
         unique_labels = np.unique(data)
@@ -623,6 +686,88 @@ class LabelManager(QWidget):
         # Cache the result
         self._layer_stats_cache[layer_id] = {"count": len(ids), "ids": ids}
         return ids
+
+    def _sample_from_non_zero_positions(
+        self,
+        data: np.ndarray,
+        non_zero_mask: np.ndarray,
+        layer_id: int,
+        return_ids: bool = False,
+    ):
+        """Sample from non-zero positions only for better efficiency."""
+        try:
+            # Get non-zero positions efficiently
+            non_zero_indices = np.where(non_zero_mask)
+            total_non_zero = len(non_zero_indices[0])
+
+            # Sample from non-zero positions
+            max_sample_size = min(
+                50_000, total_non_zero
+            )  # Sample at most 50k non-zero positions
+
+            if total_non_zero <= max_sample_size:
+                # Use all non-zero values if small enough
+                sampled_values = data[non_zero_mask]
+            else:
+                # Sample indices from non-zero positions
+                sample_step = max(1, total_non_zero // max_sample_size)
+                if data.ndim == 2:
+                    sampled_indices = (
+                        non_zero_indices[0][::sample_step][:max_sample_size],
+                        non_zero_indices[1][::sample_step][:max_sample_size],
+                    )
+                    sampled_values = data[sampled_indices]
+                elif data.ndim == 3:
+                    sampled_indices = (
+                        non_zero_indices[0][::sample_step][:max_sample_size],
+                        non_zero_indices[1][::sample_step][:max_sample_size],
+                        non_zero_indices[2][::sample_step][:max_sample_size],
+                    )
+                    sampled_values = data[sampled_indices]
+                else:
+                    # For higher dimensions, use flat indexing
+                    flat_indices = np.ravel_multi_index(
+                        non_zero_indices, data.shape
+                    )
+                    sampled_flat_indices = flat_indices[::sample_step][
+                        :max_sample_size
+                    ]
+                    sampled_values = data.flat[sampled_flat_indices]
+
+            # Get unique labels from sampled values
+            unique_labels = np.unique(sampled_values)
+
+            sparsity = total_non_zero / data.size
+
+            if return_ids:
+                ids = sorted(unique_labels.tolist())
+                self._layer_stats_cache[layer_id] = {
+                    "count": len(ids),
+                    "ids": ids,
+                    "is_estimate": total_non_zero > max_sample_size,
+                    "sparsity": sparsity,
+                    "non_zero_count": total_non_zero,
+                    "data_shape": self.current_layer.data.shape,
+                }
+                return ids
+            else:
+                count = len(unique_labels)
+                self._layer_stats_cache[layer_id] = {
+                    "count": count,
+                    "ids": unique_labels.tolist(),
+                    "is_estimate": total_non_zero > max_sample_size,
+                    "sparsity": sparsity,
+                    "non_zero_count": total_non_zero,
+                    "data_shape": self.current_layer.data.shape,
+                }
+                return count
+
+        except (MemoryError, ValueError):
+            # Fallback to original sampling method
+            if return_ids:
+                return self._estimate_label_ids_sampling(data, layer_id)
+            else:
+                return self._estimate_label_count_sampling(data, layer_id)
 
     def update_layer_info(self):
         """Update layer information display (now optimized for large datasets)."""
@@ -655,7 +800,8 @@ class LabelManager(QWidget):
                     )
             else:
                 self.update_status(
-                    f"Set {len(label_ids)} current label IDs", "green"
+                    f"Set {len(label_ids)} current label IDs,\n label IDs list is {label_ids}",
+                    "green",
                 )
         else:
             self.update_status("No labels found in current layer", "orange")
@@ -837,18 +983,28 @@ class LabelManager(QWidget):
                 is_estimate = cache_info.get("is_estimate", False)
                 is_minimal = cache_info.get("minimal_sample", False)
                 data_shape = cache_info.get("data_shape", "unknown")
+                sparsity = cache_info.get("sparsity", None)
+                non_zero_count = cache_info.get("non_zero_count", None)
 
                 # Prepare info text
                 info_text = f"Current layer: {self.current_layer.name}\n"
                 info_text += f"Data shape: {data_shape}\n"
 
+                if sparsity is not None:
+                    info_text += f"Sparsity: {sparsity:.4f} ({non_zero_count:,} non-zero pixels)\n"
+
                 if is_estimate:
                     if is_minimal:
                         info_text += f"Estimated labels: ~{label_count} (minimal sample - extremely large dataset)\n"
                     else:
-                        info_text += f"Estimated labels: ~{label_count} (sampled from current time slice)\n"
+                        info_text += f"Estimated labels: ~{label_count} (sampled from non-zero positions)\n"
                 else:
-                    info_text += f"Total labels: {label_count}\n"
+                    if (
+                        sparsity is not None and sparsity < 0.01
+                    ):  # Less than 1% non-zero
+                        info_text += f"Total labels: {label_count} (exact - sparse array)\n"
+                    else:
+                        info_text += f"Total labels: {label_count}\n"
 
                 # Add performance tip for time-series data
                 if (
@@ -856,6 +1012,14 @@ class LabelManager(QWidget):
                     and len(data_shape) >= 4
                 ):
                     info_text += "Tip: Processing current time slice only for performance\n"
+
+                # Add sparsity optimization info
+                if (
+                    sparsity is not None and sparsity < 0.1
+                ):  # Less than 10% non-zero
+                    info_text += (
+                        "Optimization: Using sparse-aware processing\n"
+                    )
 
                 # Update UI in main thread
                 QTimer.singleShot(0, lambda: self.info_text.setText(info_text))
