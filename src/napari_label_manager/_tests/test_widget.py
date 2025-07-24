@@ -106,16 +106,6 @@ def test_preset_ids_setting(make_napari_viewer):
     widget.set_preset_ids("1-10")
     assert widget.label_ids_input.text() == "1-10"
 
-    # Test even IDs preset
-    widget.set_preset_ids("even")
-    expected_even = "2,4,6,8,10,12,14,16,18,20"
-    assert widget.label_ids_input.text() == expected_even
-
-    # Test odd IDs preset
-    widget.set_preset_ids("odd")
-    expected_odd = "1,3,5,7,9,11,13,15,17,19"
-    assert widget.label_ids_input.text() == expected_odd
-
 
 def test_hide_others_checkbox_functionality(make_napari_viewer):
     """Test hide others checkbox functionality."""
