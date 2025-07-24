@@ -61,18 +61,18 @@ If napari is not already installed, you can install `napari-label-manager` with 
 pip install "napari-label-manager[all]"
 ```
 
-### For Excel Export Functionality
+### For Excel Export and Load Functionality
 
-To enable Excel export features for label annotations, install the optional dependency:
+To enable Excel export features for label annotations, install the optional and pandas dependency:
 
 ```
-pip install openpyxl
+pip install openpyxl pandas
 ```
 
 Or install everything together:
 
 ```
-pip install napari-label-manager openpyxl
+pip install napari-label-manager openpyxl pandas
 ```
 
 
