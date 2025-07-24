@@ -26,6 +26,27 @@ This is a plugin for management of label colormap generation and opacity control
 - Adjust opacity for selected labels and background
 - Apply changes to visualize your selection
 
+## Features
+
+### Label Management
+- Batch management of label colors and opacity
+- Random colormap generation with customizable seeds
+- Support for label ID ranges and individual selections
+- Quick presets for common label selections (first 10, even/odd IDs, all current)
+
+### Label Annotation
+- **NEW**: Excel-like annotation table for labeling digital IDs
+- Fill ranges of label IDs automatically
+- Load current layer's labels into annotation table
+- Add custom annotations/descriptions for each label
+- Export annotations to Excel format (.xlsx)
+
+### Performance Optimizations
+- Memory-efficient processing for large datasets
+- Time-series optimization (processes current slice only)
+- Smart sampling strategies for extremely large arrays
+- Background computation to maintain UI responsiveness
+
 ## Installation
 
 You can install `napari-label-manager` via [pip]:
@@ -38,6 +59,20 @@ If napari is not already installed, you can install `napari-label-manager` with 
 
 ```
 pip install "napari-label-manager[all]"
+```
+
+### For Excel Export Functionality
+
+To enable Excel export features for label annotations, install the optional dependency:
+
+```
+pip install openpyxl
+```
+
+Or install everything together:
+
+```
+pip install napari-label-manager openpyxl
 ```
 
 
