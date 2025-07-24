@@ -178,3 +178,26 @@ def test_layer_changed_functionality(make_napari_viewer):
     # Test with non-existent layer
     widget.on_layer_changed("non_existent")
     # Should handle gracefully without crashing
+
+
+def test_annotation_widget(make_napari_viewer):
+    """Test the annotation widget functionality."""
+    viewer = make_napari_viewer()
+
+    # Create a simple test label array
+    label_data = np.zeros((100, 100), dtype=int)
+
+    # Add some labels
+    label_data[10:20, 10:20] = 1
+    label_data[30:40, 30:40] = 2
+    label_data[50:60, 50:60] = 3
+    label_data[70:80, 70:80] = 4
+
+    # Add label layer
+    viewer.add_labels(label_data, name="Test Labels")
+
+    # Create label manager widget
+    widget = LabelManager(viewer)
+
+    # test annotation table functionality
+    widget.load_current_labels_btn.click()  # Load current labels into the table
