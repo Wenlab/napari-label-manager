@@ -1,28 +1,6 @@
 """
 Napari Label Manager Plugin
 A plugin for batch management of label colors and opacity in napari.
-
-Performance Optimizations for Large Label Layers:
-
-Memory-Efficient Strategies:
-1. **Time-Series Optimization**: For 4D+ arrays, only process current time slice
-2. **Block Sampling**: Use systematic sampling instead of random indices to avoid memory allocation
-3. **Tiered Sampling**:
-   - Normal arrays: Exact computation
-   - Large arrays (>10M pixels): Block sampling with 500k sample size
-   - Extremely large arrays: Minimal sampling with 50k sample size
-4. **Caching System**: Results cached per layer ID to avoid recomputation
-5. **Delayed Updates**: Layer info updates delayed to prevent UI blocking
-6. **Background Computation**: Heavy computations run in separate threads
-7. **Graceful Degradation**: Multiple fallback strategies for memory errors
-
-Memory Usage Improvements:
-- Avoids creating large index arrays (which caused the 140GB allocation error)
-- Processes only current time slice for time-series data
-- Uses step-based sampling instead of random.choice()
-- Automatic fallback to smaller samples when memory is insufficient
-
-These optimizations handle datasets with billions of pixels while maintaining responsiveness.
 """
 
 import re
@@ -30,6 +8,7 @@ import threading
 
 # Add Excel support imports
 try:
+    import pandas as pd
     from openpyxl import Workbook
     from openpyxl.styles import Alignment
 
@@ -241,15 +220,9 @@ class LabelManager(QWidget):
         )
         presets_layout.addWidget(self.preset_first10_btn)
 
-        self.preset_even_btn = QPushButton("Even IDs")
-        self.preset_even_btn.clicked.connect(
-            lambda: self.set_preset_ids("even")
-        )
-        presets_layout.addWidget(self.preset_even_btn)
-
-        self.preset_odd_btn = QPushButton("Odd IDs")
-        self.preset_odd_btn.clicked.connect(lambda: self.set_preset_ids("odd"))
-        presets_layout.addWidget(self.preset_odd_btn)
+        self.preset_next_btn = QPushButton("Next ID")
+        self.preset_next_btn.clicked.connect(self.add_next_id)
+        presets_layout.addWidget(self.preset_next_btn)
 
         self.preset_all_btn = QPushButton("All Current")
         self.preset_all_btn.clicked.connect(self.set_all_current_ids)
@@ -325,20 +298,30 @@ class LabelManager(QWidget):
         self.annotation_end_input.setFixedWidth(50)
         annotation_control_layout.addWidget(self.annotation_end_input)
 
-        self.fill_annotation_btn = QPushButton("Fill Range")
+        self.fill_annotation_btn = QPushButton("Fill")
         self.fill_annotation_btn.clicked.connect(self.fill_annotation_range)
         annotation_control_layout.addWidget(self.fill_annotation_btn)
 
-        self.load_current_labels_btn = QPushButton("Load Current Labels")
+        self.load_current_labels_btn = QPushButton("Current IDs")
         self.load_current_labels_btn.clicked.connect(
             self.load_current_labels_to_annotation
         )
         annotation_control_layout.addWidget(self.load_current_labels_btn)
 
+        # Load Excel button
+        self.load_excel_btn = QPushButton("Load Excel")
+        self.load_excel_btn.clicked.connect(self.load_excel_to_annotation)
+        self.load_excel_btn.setEnabled(EXCEL_AVAILABLE)
+        if not EXCEL_AVAILABLE:
+            self.load_excel_btn.setToolTip(
+                "Install openpyxl to enable Excel import"
+            )
+        annotation_control_layout.addWidget(self.load_excel_btn)
+
         annotation_control_layout.addStretch(1)
 
-        # Save to Excel button
-        self.save_annotation_btn = QPushButton("Save to Excel")
+        # Save button
+        self.save_annotation_btn = QPushButton("Save Excel")
         self.save_annotation_btn.clicked.connect(self.save_annotation_to_excel)
         self.save_annotation_btn.setEnabled(EXCEL_AVAILABLE)
         if not EXCEL_AVAILABLE:
@@ -351,9 +334,9 @@ class LabelManager(QWidget):
 
         # Annotation table
         self.annotation_table = QTableWidget()
-        self.annotation_table.setColumnCount(2)
+        self.annotation_table.setColumnCount(3)
         self.annotation_table.setHorizontalHeaderLabels(
-            ["digital", "biological"]
+            ["digital", "biological", "annotation"]
         )
 
         # Set column resize modes
@@ -362,6 +345,9 @@ class LabelManager(QWidget):
         )
         self.annotation_table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.Stretch
+        )
+        self.annotation_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.Stretch
         )
 
         # Allow multiple row selection
@@ -476,12 +462,45 @@ class LabelManager(QWidget):
         """Set preset label IDs."""
         if preset_type == "1-10":
             self.label_ids_input.setText("1-10")
-        elif preset_type == "even":
-            even_ids = [str(i) for i in range(2, min(21, self.max_labels), 2)]
-            self.label_ids_input.setText(",".join(even_ids))
-        elif preset_type == "odd":
-            odd_ids = [str(i) for i in range(1, min(21, self.max_labels), 2)]
-            self.label_ids_input.setText(",".join(odd_ids))
+
+    def add_next_id(self):
+        """Add the next ID from the current layer's label list."""
+        if not self.current_layer:
+            self.update_status("No layer selected", "red")
+            return
+
+        # Get current label IDs from the layer
+        current_layer_ids = self.get_current_label_ids()
+        if not current_layer_ids:
+            self.update_status("No labels found in current layer", "orange")
+            return
+
+        # Parse currently selected IDs from input
+        current_input = self.label_ids_input.text().strip()
+        if current_input:
+            selected_ids = set(self.parse_label_ids(current_input))
+        else:
+            selected_ids = set()
+
+        # Find the next ID that's not already selected
+        next_id = None
+        for label_id in sorted(current_layer_ids):
+            if label_id not in selected_ids:
+                next_id = label_id
+                break
+
+        if next_id is not None:
+            # Add to existing selection
+            if current_input:
+                new_input = f"{current_input},{next_id}"
+            else:
+                new_input = str(next_id)
+            self.label_ids_input.setText(new_input)
+            self.update_status(f"Added next ID: {next_id}", "green")
+        else:
+            self.update_status(
+                "All available IDs are already selected", "orange"
+            )
 
     def parse_label_ids(self, ids_string: str) -> list:
         """Parse label IDs from string input using regex."""
@@ -1166,38 +1185,61 @@ class LabelManager(QWidget):
                     label_item.setTextAlignment(Qt.AlignCenter)
                     self.annotation_table.setItem(row_idx, 0, label_item)
 
-                    # Keep existing annotation if any
+                    # Keep existing data if any
                     if self.annotation_table.item(row_idx, 1) is None:
                         self.annotation_table.setItem(
                             row_idx, 1, QTableWidgetItem("")
                         )
+                    if self.annotation_table.item(row_idx, 2) is None:
+                        self.annotation_table.setItem(
+                            row_idx, 2, QTableWidgetItem("")
+                        )
         else:
             # Fill all rows
             current_rows = self.annotation_table.rowCount()
-            # Save existing annotation data
+            # Save existing data
+            biological_data = []
             annotation_data = []
             for row in range(current_rows):
-                item = self.annotation_table.item(row, 1)
-                annotation_data.append(item.text() if item else "")
+                biological_item = self.annotation_table.item(row, 1)
+                annotation_item = self.annotation_table.item(row, 2)
+                biological_data.append(
+                    biological_item.text() if biological_item else ""
+                )
+                annotation_data.append(
+                    annotation_item.text() if annotation_item else ""
+                )
 
             # Set new row count
             self.annotation_table.setRowCount(num_rows)
 
             for row_idx in range(num_rows):
                 current_num = start_num + row_idx
-                label_item = QTableWidgetItem(str(current_num))
-                label_item.setTextAlignment(Qt.AlignCenter)
-                self.annotation_table.setItem(row_idx, 0, label_item)
+                # Set digital (label ID)
+                digital_item = QTableWidgetItem(str(current_num))
+                digital_item.setTextAlignment(Qt.AlignCenter)
+                self.annotation_table.setItem(row_idx, 0, digital_item)
 
-                # Restore annotation if exists
+                # Restore biological data if exists
+                if row_idx < len(biological_data):
+                    biological_item = QTableWidgetItem(
+                        biological_data[row_idx]
+                    )
+                    self.annotation_table.setItem(row_idx, 1, biological_item)
+                else:
+                    self.annotation_table.setItem(
+                        row_idx, 1, QTableWidgetItem("")
+                    )
+
+                # Restore annotation data if exists
                 if row_idx < len(annotation_data):
                     annotation_item = QTableWidgetItem(
                         annotation_data[row_idx]
                     )
-                    self.annotation_table.setItem(row_idx, 1, annotation_item)
+                    self.annotation_table.setItem(row_idx, 2, annotation_item)
                 else:
                     self.annotation_table.setItem(
-                        row_idx, 1, QTableWidgetItem("")
+                        row_idx, 2, QTableWidgetItem("")
                     )
 
     def load_current_labels_to_annotation(self):
@@ -1222,13 +1264,22 @@ class LabelManager(QWidget):
 
             # Save existing annotations
             existing_annotations = {}
+            existing_biological = {}
             for row in range(self.annotation_table.rowCount()):
-                label_item = self.annotation_table.item(row, 0)
-                annotation_item = self.annotation_table.item(row, 1)
-                if label_item and annotation_item:
+                digital_item = self.annotation_table.item(row, 0)
+                biological_item = self.annotation_table.item(row, 1)
+                annotation_item = self.annotation_table.item(row, 2)
+                if digital_item:
                     try:
-                        label_id = int(label_item.text())
-                        existing_annotations[label_id] = annotation_item.text()
+                        label_id = int(digital_item.text())
+                        if biological_item:
+                            existing_biological[label_id] = (
+                                biological_item.text()
+                            )
+                        if annotation_item:
+                            existing_annotations[label_id] = (
+                                annotation_item.text()
+                            )
                     except ValueError:
                         continue
 
@@ -1236,15 +1287,20 @@ class LabelManager(QWidget):
             self.annotation_table.setRowCount(len(label_ids))
 
             for row_idx, label_id in enumerate(sorted(label_ids)):
-                # Set label ID
-                label_item = QTableWidgetItem(str(label_id))
-                label_item.setTextAlignment(Qt.AlignCenter)
-                self.annotation_table.setItem(row_idx, 0, label_item)
+                # Set digital (label ID)
+                digital_item = QTableWidgetItem(str(label_id))
+                digital_item.setTextAlignment(Qt.AlignCenter)
+                self.annotation_table.setItem(row_idx, 0, digital_item)
+
+                # Set biological (keep existing if available)
+                biological_text = existing_biological.get(label_id, "")
+                biological_item = QTableWidgetItem(biological_text)
+                self.annotation_table.setItem(row_idx, 1, biological_item)
 
                 # Set annotation (keep existing if available)
                 annotation_text = existing_annotations.get(label_id, "")
                 annotation_item = QTableWidgetItem(annotation_text)
-                self.annotation_table.setItem(row_idx, 1, annotation_item)
+                self.annotation_table.setItem(row_idx, 2, annotation_item)
 
             self.update_status(
                 f"Loaded {len(label_ids)} labels from current layer", "green"
@@ -1282,7 +1338,7 @@ class LabelManager(QWidget):
             ws.title = "Label Annotations"
 
             # Write headers
-            ws.append(["Label ID", "Annotation"])
+            ws.append(["digital", "biological", "annotation"])
 
             # Set header alignment
             for col_idx in range(1, ws.max_column + 1):
@@ -1292,15 +1348,19 @@ class LabelManager(QWidget):
 
             # Write data
             for row in range(self.annotation_table.rowCount()):
-                label_item = self.annotation_table.item(row, 0)
-                annotation_item = self.annotation_table.item(row, 1)
+                digital_item = self.annotation_table.item(row, 0)
+                biological_item = self.annotation_table.item(row, 1)
+                annotation_item = self.annotation_table.item(row, 2)
 
-                label_value = label_item.text() if label_item else ""
+                digital_value = digital_item.text() if digital_item else ""
+                biological_value = (
+                    biological_item.text() if biological_item else ""
+                )
                 annotation_value = (
                     annotation_item.text() if annotation_item else ""
                 )
 
-                ws.append([label_value, annotation_value])
+                ws.append([digital_value, biological_value, annotation_value])
 
             # Adjust column widths
             for col in ws.columns:
@@ -1328,3 +1388,137 @@ class LabelManager(QWidget):
                 self, "Error", f"Failed to save Excel file:\n{str(e)}"
             )
             self.update_status("Failed to save annotations", "red")
+
+    def load_excel_to_annotation(self):
+        """Load Excel file and populate annotation table."""
+        if not EXCEL_AVAILABLE:
+            QMessageBox.critical(
+                self,
+                "Error",
+                "openpyxl and pandas libraries are not installed.\nPlease install them with: pip install openpyxl pandas",
+            )
+            return
+
+        # Get file path from user
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Excel File",
+            "",
+            "Excel Files (*.xlsx *.xls);;All Files (*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # Read Excel file using pandas
+            df = pd.read_excel(file_path, header=None)
+
+            if df.empty:
+                QMessageBox.warning(
+                    self, "Warning", "The Excel file is empty."
+                )
+                return
+
+            # Find the first column with numeric data (ignoring headers)
+            numeric_col_idx = None
+            start_row = 0
+
+            # Look for the first row that contains numeric data in any column
+            for row_idx in range(len(df)):
+                for col_idx in range(len(df.columns)):
+                    cell_value = df.iloc[row_idx, col_idx]
+                    if pd.notna(cell_value):
+                        try:
+                            # Try to convert to number
+                            float(str(cell_value))
+                            numeric_col_idx = col_idx
+                            start_row = row_idx
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                if numeric_col_idx is not None:
+                    break
+
+            if numeric_col_idx is None:
+                QMessageBox.warning(
+                    self, "Warning", "No numeric data found in the Excel file."
+                )
+                return
+
+            # Extract data from the identified starting row
+            data_rows = []
+            for row_idx in range(start_row, len(df)):
+                # Get the numeric value from the identified column
+                cell_value = df.iloc[row_idx, numeric_col_idx]
+                if pd.notna(cell_value):
+                    try:
+                        num_value = int(float(str(cell_value)))
+
+                        # Get data from the next two columns (biological and annotation)
+                        biological_value = ""
+                        annotation_value = ""
+
+                        # Try to get biological value from next column
+                        if numeric_col_idx + 1 < len(df.columns):
+                            bio_cell = df.iloc[row_idx, numeric_col_idx + 1]
+                            if pd.notna(bio_cell):
+                                biological_value = str(bio_cell).strip()
+
+                        # Try to get annotation value from column after that
+                        if numeric_col_idx + 2 < len(df.columns):
+                            ann_cell = df.iloc[row_idx, numeric_col_idx + 2]
+                            if pd.notna(ann_cell):
+                                annotation_value = str(ann_cell).strip()
+
+                        data_rows.append(
+                            (num_value, biological_value, annotation_value)
+                        )
+                    except (ValueError, TypeError):
+                        continue
+
+            if not data_rows:
+                QMessageBox.warning(
+                    self, "Warning", "No valid data rows found."
+                )
+                return
+
+            # Set table size based on the number of data entries
+            self.annotation_table.setRowCount(len(data_rows))
+
+            # Fill the three columns with data from Excel
+            for row_idx, (
+                digital_value,
+                biological_value,
+                annotation_value,
+            ) in enumerate(data_rows):
+                # Column 0: digital (the numeric value from Excel)
+                digital_item = QTableWidgetItem(str(digital_value))
+                digital_item.setTextAlignment(Qt.AlignCenter)
+                self.annotation_table.setItem(row_idx, 0, digital_item)
+
+                # Column 1: biological (from Excel file)
+                biological_item = QTableWidgetItem(biological_value)
+                self.annotation_table.setItem(row_idx, 1, biological_item)
+
+                # Column 2: annotation (from Excel file)
+                annotation_item = QTableWidgetItem(annotation_value)
+                self.annotation_table.setItem(row_idx, 2, annotation_item)
+
+            self.update_status(
+                f"Loaded {len(data_rows)} entries from Excel file", "green"
+            )
+
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Successfully loaded {len(data_rows)} entries from Excel file.\n"
+                f"Found data starting from row {start_row + 1}, column {numeric_col_idx + 1}.\n"
+                f"Loaded digital, biological, and annotation data from 3 columns.",
+            )
+
+        except ValueError as e:
+            QMessageBox.critical(
+                self, "Error", f"Failed to load Excel file:\n{str(e)}"
+            )
+            self.update_status("Failed to load Excel file", "red")
