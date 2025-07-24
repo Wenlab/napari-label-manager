@@ -28,6 +28,15 @@ These optimizations handle datasets with billions of pixels while maintaining re
 import re
 import threading
 
+# Add Excel support imports
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment
+
+    EXCEL_AVAILABLE = True
+except ImportError:
+    EXCEL_AVAILABLE = False
+
 import napari
 import numpy as np
 from napari.layers import Labels
@@ -37,14 +46,19 @@ from qtpy.QtGui import QFont
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSlider,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -292,6 +306,76 @@ class LabelManager(QWidget):
 
         batch_group.setLayout(batch_layout)
         layout.addWidget(batch_group)
+
+        # Label Annotation
+        annotation_group = QGroupBox("Label Annotation")
+        annotation_layout = QVBoxLayout()
+
+        # Control buttons
+        annotation_control_layout = QHBoxLayout()
+
+        # Fill range controls
+        annotation_control_layout.addWidget(QLabel("Start:"))
+        self.annotation_start_input = QLineEdit("1")
+        self.annotation_start_input.setFixedWidth(50)
+        annotation_control_layout.addWidget(self.annotation_start_input)
+
+        annotation_control_layout.addWidget(QLabel("End:"))
+        self.annotation_end_input = QLineEdit("10")
+        self.annotation_end_input.setFixedWidth(50)
+        annotation_control_layout.addWidget(self.annotation_end_input)
+
+        self.fill_annotation_btn = QPushButton("Fill Range")
+        self.fill_annotation_btn.clicked.connect(self.fill_annotation_range)
+        annotation_control_layout.addWidget(self.fill_annotation_btn)
+
+        self.load_current_labels_btn = QPushButton("Load Current Labels")
+        self.load_current_labels_btn.clicked.connect(
+            self.load_current_labels_to_annotation
+        )
+        annotation_control_layout.addWidget(self.load_current_labels_btn)
+
+        annotation_control_layout.addStretch(1)
+
+        # Save to Excel button
+        self.save_annotation_btn = QPushButton("Save to Excel")
+        self.save_annotation_btn.clicked.connect(self.save_annotation_to_excel)
+        self.save_annotation_btn.setEnabled(EXCEL_AVAILABLE)
+        if not EXCEL_AVAILABLE:
+            self.save_annotation_btn.setToolTip(
+                "Install openpyxl to enable Excel export"
+            )
+        annotation_control_layout.addWidget(self.save_annotation_btn)
+
+        annotation_layout.addLayout(annotation_control_layout)
+
+        # Annotation table
+        self.annotation_table = QTableWidget()
+        self.annotation_table.setColumnCount(2)
+        self.annotation_table.setHorizontalHeaderLabels(
+            ["digital", "biological"]
+        )
+
+        # Set column resize modes
+        self.annotation_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self.annotation_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.Stretch
+        )
+
+        # Allow multiple row selection
+        self.annotation_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.annotation_table.setSelectionMode(QTableWidget.ExtendedSelection)
+
+        # Set initial table size and fill with default range
+        self.annotation_table.setRowCount(5)
+        self.fill_annotation_range()
+
+        annotation_layout.addWidget(self.annotation_table)
+
+        annotation_group.setLayout(annotation_layout)
+        layout.addWidget(annotation_group)
 
         # Status and info
         info_group = QGroupBox("Status & Info")
@@ -1038,3 +1122,209 @@ class LabelManager(QWidget):
         # Run computation in background thread
         thread = threading.Thread(target=compute_in_background, daemon=True)
         thread.start()
+
+    def fill_annotation_range(self):
+        """Fill the annotation table with a range of label IDs."""
+        try:
+            start_num = int(self.annotation_start_input.text())
+            end_num = int(self.annotation_end_input.text())
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "Please enter valid integers for start and end numbers.",
+            )
+            return
+
+        if start_num > end_num:
+            QMessageBox.warning(
+                self,
+                "Error",
+                "Start number cannot be greater than end number.",
+            )
+            return
+
+        num_rows = end_num - start_num + 1
+
+        # Get current selected rows
+        selected_ranges = self.annotation_table.selectedRanges()
+
+        if selected_ranges:
+            # Fill only selected rows
+            for r_range in selected_ranges:
+                # Adjust table size if needed
+                if r_range.bottomRow() >= self.annotation_table.rowCount():
+                    self.annotation_table.setRowCount(r_range.bottomRow() + 1)
+
+                for row_idx in range(
+                    r_range.topRow(), r_range.bottomRow() + 1
+                ):
+                    # Calculate label ID based on position in selection
+                    current_num = start_num + (row_idx - r_range.topRow())
+
+                    label_item = QTableWidgetItem(str(current_num))
+                    label_item.setTextAlignment(Qt.AlignCenter)
+                    self.annotation_table.setItem(row_idx, 0, label_item)
+
+                    # Keep existing annotation if any
+                    if self.annotation_table.item(row_idx, 1) is None:
+                        self.annotation_table.setItem(
+                            row_idx, 1, QTableWidgetItem("")
+                        )
+        else:
+            # Fill all rows
+            current_rows = self.annotation_table.rowCount()
+            # Save existing annotation data
+            annotation_data = []
+            for row in range(current_rows):
+                item = self.annotation_table.item(row, 1)
+                annotation_data.append(item.text() if item else "")
+
+            # Set new row count
+            self.annotation_table.setRowCount(num_rows)
+
+            for row_idx in range(num_rows):
+                current_num = start_num + row_idx
+                label_item = QTableWidgetItem(str(current_num))
+                label_item.setTextAlignment(Qt.AlignCenter)
+                self.annotation_table.setItem(row_idx, 0, label_item)
+
+                # Restore annotation if exists
+                if row_idx < len(annotation_data):
+                    annotation_item = QTableWidgetItem(
+                        annotation_data[row_idx]
+                    )
+                    self.annotation_table.setItem(row_idx, 1, annotation_item)
+                else:
+                    self.annotation_table.setItem(
+                        row_idx, 1, QTableWidgetItem("")
+                    )
+
+    def load_current_labels_to_annotation(self):
+        """Load current layer's label IDs into the annotation table."""
+        if not self.current_layer:
+            QMessageBox.warning(self, "Error", "No label layer selected.")
+            return
+
+        try:
+            # Get current label IDs
+            label_ids = self.get_current_label_ids()
+
+            if not label_ids:
+                QMessageBox.information(
+                    self, "Info", "No labels found in current layer."
+                )
+                return
+
+            # Remove background value (0) if present
+            if 0 in label_ids:
+                label_ids.remove(0)
+
+            # Save existing annotations
+            existing_annotations = {}
+            for row in range(self.annotation_table.rowCount()):
+                label_item = self.annotation_table.item(row, 0)
+                annotation_item = self.annotation_table.item(row, 1)
+                if label_item and annotation_item:
+                    try:
+                        label_id = int(label_item.text())
+                        existing_annotations[label_id] = annotation_item.text()
+                    except ValueError:
+                        continue
+
+            # Set table size and fill with label IDs
+            self.annotation_table.setRowCount(len(label_ids))
+
+            for row_idx, label_id in enumerate(sorted(label_ids)):
+                # Set label ID
+                label_item = QTableWidgetItem(str(label_id))
+                label_item.setTextAlignment(Qt.AlignCenter)
+                self.annotation_table.setItem(row_idx, 0, label_item)
+
+                # Set annotation (keep existing if available)
+                annotation_text = existing_annotations.get(label_id, "")
+                annotation_item = QTableWidgetItem(annotation_text)
+                self.annotation_table.setItem(row_idx, 1, annotation_item)
+
+            self.update_status(
+                f"Loaded {len(label_ids)} labels from current layer", "green"
+            )
+
+        except (MemoryError, ValueError, RuntimeError, AttributeError) as e:
+            QMessageBox.critical(
+                self, "Error", f"Failed to load current labels:\n{str(e)}"
+            )
+
+    def save_annotation_to_excel(self):
+        """Save annotation table to Excel file."""
+        if not EXCEL_AVAILABLE:
+            QMessageBox.critical(
+                self,
+                "Error",
+                "openpyxl library is not installed.\nPlease install it with: pip install openpyxl",
+            )
+            return
+
+        # Get file path from user
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Annotation to Excel",
+            "label_annotations.xlsx",
+            "Excel Files (*.xlsx);;All Files (*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Label Annotations"
+
+            # Write headers
+            ws.append(["Label ID", "Annotation"])
+
+            # Set header alignment
+            for col_idx in range(1, ws.max_column + 1):
+                ws.cell(row=1, column=col_idx).alignment = Alignment(
+                    horizontal="center", vertical="center"
+                )
+
+            # Write data
+            for row in range(self.annotation_table.rowCount()):
+                label_item = self.annotation_table.item(row, 0)
+                annotation_item = self.annotation_table.item(row, 1)
+
+                label_value = label_item.text() if label_item else ""
+                annotation_value = (
+                    annotation_item.text() if annotation_item else ""
+                )
+
+                ws.append([label_value, annotation_value])
+
+            # Adjust column widths
+            for col in ws.columns:
+                max_length = 0
+                column = col[0].column_letter
+                for cell in col:
+                    try:
+                        if cell.value is not None:
+                            cell_length = len(str(cell.value))
+                            if cell_length > max_length:
+                                max_length = cell_length
+                    except (AttributeError, TypeError, ValueError):
+                        pass
+                adjusted_width = (max_length + 2) * 1.2
+                ws.column_dimensions[column].width = adjusted_width
+
+            wb.save(file_path)
+            QMessageBox.information(
+                self, "Success", f"Annotations saved to:\n{file_path}"
+            )
+            self.update_status("Annotations saved to Excel", "green")
+
+        except (OSError, PermissionError, ValueError) as e:
+            QMessageBox.critical(
+                self, "Error", f"Failed to save Excel file:\n{str(e)}"
+            )
+            self.update_status("Failed to save annotations", "red")
