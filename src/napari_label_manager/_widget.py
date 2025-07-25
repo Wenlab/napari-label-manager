@@ -3,13 +3,14 @@ Napari Label Manager Plugin
 A plugin for batch management of label colors and opacity in napari.
 """
 
+import os
 import re
 import threading
 
 # Add Excel support imports
 try:
     import pandas as pd
-    from openpyxl import Workbook
+    from openpyxl import Workbook, load_workbook
     from openpyxl.styles import Alignment
 
     EXCEL_AVAILABLE = True
@@ -287,6 +288,15 @@ class LabelManager(QWidget):
         # Control buttons
         annotation_control_layout = QHBoxLayout()
 
+        # Sheet name input
+        annotation_control_layout.addWidget(QLabel("Sheet:"))
+        self.sheet_name_input = QLineEdit("Label Annotations")
+        self.sheet_name_input.setFixedWidth(120)
+        self.sheet_name_input.setToolTip(
+            "Excel sheet name for save/load operations"
+        )
+        annotation_control_layout.addWidget(self.sheet_name_input)
+
         # Fill range controls
         annotation_control_layout.addWidget(QLabel("Start:"))
         self.annotation_start_input = QLineEdit("1")
@@ -309,7 +319,7 @@ class LabelManager(QWidget):
         annotation_control_layout.addWidget(self.load_current_labels_btn)
 
         # Load Excel button
-        self.load_excel_btn = QPushButton("Load Excel")
+        self.load_excel_btn = QPushButton("Load")
         self.load_excel_btn.clicked.connect(self.load_excel_to_annotation)
         self.load_excel_btn.setEnabled(EXCEL_AVAILABLE)
         if not EXCEL_AVAILABLE:
@@ -321,7 +331,7 @@ class LabelManager(QWidget):
         annotation_control_layout.addStretch(1)
 
         # Save button
-        self.save_annotation_btn = QPushButton("Save Excel")
+        self.save_annotation_btn = QPushButton("Save")
         self.save_annotation_btn.clicked.connect(self.save_annotation_to_excel)
         self.save_annotation_btn.setEnabled(EXCEL_AVAILABLE)
         if not EXCEL_AVAILABLE:
@@ -1331,7 +1341,7 @@ class LabelManager(QWidget):
             )
 
     def save_annotation_to_excel(self):
-        """Save annotation table to Excel file."""
+        """Save annotation table to Excel file with custom sheet name and append mode."""
         if not EXCEL_AVAILABLE:
             QMessageBox.critical(
                 self,
@@ -1351,10 +1361,36 @@ class LabelManager(QWidget):
         if not file_path:
             return
 
+        # Get sheet name from input field
+        sheet_name = self.sheet_name_input.text().strip()
+        if not sheet_name:
+            sheet_name = "Label Annotations"
+
         try:
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Label Annotations"
+            # Check if file exists and load existing workbook or create new one
+            if os.path.exists(file_path):
+                wb = load_workbook(file_path)
+                # If sheet already exists, ask user if they want to overwrite
+                if sheet_name in wb.sheetnames:
+                    reply = QMessageBox.question(
+                        self,
+                        "Sheet Exists",
+                        f"Sheet '{sheet_name}' already exists. Do you want to overwrite it?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.No,
+                    )
+                    if reply == QMessageBox.Yes:
+                        # Remove existing sheet
+                        wb.remove(wb[sheet_name])
+                    else:
+                        return
+
+                # Create new sheet
+                ws = wb.create_sheet(title=sheet_name)
+            else:
+                wb = Workbook()
+                ws = wb.active
+                ws.title = sheet_name
 
             # Write headers
             ws.append(["digital", "biological", "annotation"])
@@ -1371,7 +1407,21 @@ class LabelManager(QWidget):
                 biological_item = self.annotation_table.item(row, 1)
                 annotation_item = self.annotation_table.item(row, 2)
 
+                # Convert digital value from string to number
                 digital_value = digital_item.text() if digital_item else ""
+                try:
+                    # Try to convert to integer first, then float if that fails
+                    if digital_value.strip():
+                        if "." in digital_value:
+                            digital_value = float(digital_value)
+                        else:
+                            digital_value = int(digital_value)
+                    else:
+                        digital_value = ""
+                except (ValueError, AttributeError):
+                    # Keep as string if conversion fails
+                    pass
+
                 biological_value = (
                     biological_item.text() if biological_item else ""
                 )
@@ -1398,9 +1448,13 @@ class LabelManager(QWidget):
 
             wb.save(file_path)
             QMessageBox.information(
-                self, "Success", f"Annotations saved to:\n{file_path}"
+                self,
+                "Success",
+                f"Annotations saved to sheet '{sheet_name}' in:\n{file_path}",
             )
-            self.update_status("Annotations saved to Excel", "green")
+            self.update_status(
+                f"Annotations saved to Excel sheet '{sheet_name}'", "green"
+            )
 
         except (OSError, PermissionError, ValueError) as e:
             QMessageBox.critical(
@@ -1409,7 +1463,7 @@ class LabelManager(QWidget):
             self.update_status("Failed to save annotations", "red")
 
     def load_excel_to_annotation(self):
-        """Load Excel file and populate annotation table."""
+        """Load Excel file and populate annotation table using specified sheet name."""
         if not EXCEL_AVAILABLE:
             QMessageBox.critical(
                 self,
@@ -1429,13 +1483,44 @@ class LabelManager(QWidget):
         if not file_path:
             return
 
+        # Get sheet name from input field
+        sheet_name = self.sheet_name_input.text().strip()
+        if not sheet_name:
+            sheet_name = "Label Annotations"
+
         try:
-            # Read Excel file using pandas
-            df = pd.read_excel(file_path, header=None)
+            # Check available sheets in the Excel file
+            wb = load_workbook(file_path, read_only=True)
+            available_sheets = wb.sheetnames
+            wb.close()
+
+            # Determine which sheet to read
+            sheet_to_read = None
+            if sheet_name in available_sheets:
+                sheet_to_read = sheet_name
+            else:
+                # If specified sheet doesn't exist, use the first sheet
+                if available_sheets:
+                    sheet_to_read = available_sheets[0]
+                    QMessageBox.information(
+                        self,
+                        "Sheet Not Found",
+                        f"Sheet '{sheet_name}' not found. Using first sheet '{sheet_to_read}' instead.",
+                    )
+                else:
+                    QMessageBox.warning(
+                        self, "Warning", "No sheets found in the Excel file."
+                    )
+                    return
+
+            # Read Excel file using pandas with specific sheet
+            df = pd.read_excel(
+                file_path, sheet_name=sheet_to_read, header=None
+            )
 
             if df.empty:
                 QMessageBox.warning(
-                    self, "Warning", "The Excel file is empty."
+                    self, "Warning", f"The sheet '{sheet_to_read}' is empty."
                 )
                 return
 
@@ -1461,7 +1546,9 @@ class LabelManager(QWidget):
 
             if numeric_col_idx is None:
                 QMessageBox.warning(
-                    self, "Warning", "No numeric data found in the Excel file."
+                    self,
+                    "Warning",
+                    f"No numeric data found in sheet '{sheet_to_read}'.",
                 )
                 return
 
@@ -1498,7 +1585,9 @@ class LabelManager(QWidget):
 
             if not data_rows:
                 QMessageBox.warning(
-                    self, "Warning", "No valid data rows found."
+                    self,
+                    "Warning",
+                    f"No valid data rows found in sheet '{sheet_to_read}'.",
                 )
                 return
 
@@ -1525,13 +1614,14 @@ class LabelManager(QWidget):
                 self.annotation_table.setItem(row_idx, 2, annotation_item)
 
             self.update_status(
-                f"Loaded {len(data_rows)} entries from Excel file", "green"
+                f"Loaded {len(data_rows)} entries from sheet '{sheet_to_read}'",
+                "green",
             )
 
             QMessageBox.information(
                 self,
                 "Success",
-                f"Successfully loaded {len(data_rows)} entries from Excel file.\n"
+                f"Successfully loaded {len(data_rows)} entries from sheet '{sheet_to_read}'.\n"
                 f"Found data starting from row {start_row + 1}, column {numeric_col_idx + 1}.\n"
                 f"Loaded digital, biological, and annotation data from 3 columns.",
             )
