@@ -1288,7 +1288,7 @@ class LabelManager(QWidget):
 
             for row_idx, label_id in enumerate(sorted(label_ids)):
                 # Set digital (label ID)
-                digital_item = QTableWidgetItem(str(label_id))
+                digital_item = QTableWidgetItem(str(label_id - 1))
                 digital_item.setTextAlignment(Qt.AlignCenter)
                 self.annotation_table.setItem(row_idx, 0, digital_item)
 
