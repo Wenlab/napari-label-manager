@@ -484,10 +484,29 @@ class LabelManager(QWidget):
 
         # Find the next ID that's not already selected
         next_id = None
-        for label_id in sorted(current_layer_ids):
-            if label_id not in selected_ids:
-                next_id = label_id
-                break
+
+        if selected_ids:
+            # select the maximum ID from the currently selected IDs
+            max_selected_id = max(selected_ids)
+
+            # Find the next ID in current_layer_ids that's greater than max_selected_id
+            for label_id in sorted(current_layer_ids):
+                if label_id > max_selected_id and label_id not in selected_ids:
+                    next_id = label_id
+                    break
+
+            # If that doesn't work, find the smallest missing ID in current_layer_ids
+            if next_id is None:
+                for label_id in sorted(current_layer_ids):
+                    if label_id not in selected_ids:
+                        next_id = label_id
+                        break
+        else:
+            # If no IDs are selected, start from the smallest
+            for label_id in sorted(current_layer_ids):
+                if label_id not in selected_ids:
+                    next_id = label_id
+                    break
 
         if next_id is not None:
             # Add to existing selection
